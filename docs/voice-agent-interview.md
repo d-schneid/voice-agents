@@ -414,6 +414,60 @@ An interview-ready explanation is:
 > bounded queues, cancellation propagation, stale-generation rejection,
 > authentication, and durable state.”
 
+### STT as a long-lived producer-consumer session
+
+The tutorial's STT step is not a single
+`transcribe(complete_audio)` request. It is a stateful, bidirectional provider
+session:
+
+```text
+browser audio -> producer -> STT WebSocket
+                             |
+                 transcript events <- consumer
+```
+
+The producer sends audio chunks while the consumer receives recognition
+events. This allows transcription to begin before the user's entire utterance
+has arrived.
+
+Keep provisional and committed results separate:
+
+```text
+stt_chunk  -> partial/provisional transcript, useful for captions or hints
+stt_output -> finalized turn, normally safe to pass to the agent
+```
+
+The finalized event is a semantic boundary, not merely another text message.
+It determines when the agent starts reasoning. Starting tools from provisional
+text can cause actions based on an incomplete phrase, while waiting for every
+final result increases latency. The correct policy depends on the action risk:
+captions may show partial text, read-only lookups may be speculative, and
+irreversible tools should require finalized, validated intent plus the normal
+authorization and confirmation checks.
+
+The STT adapter should own provider-specific details:
+
+- WebSocket connection and termination lifecycle;
+- audio encoding, sample rate, channels, and chunk validation;
+- provider message parsing and sequence handling;
+- mapping provider events to normalized application events;
+- timeout, reconnect, and provider-error behavior;
+- idempotent cleanup when both the audio task and outer pipeline terminate.
+
+The rest of the runtime should consume normalized events rather than AssemblyAI
+or another provider's raw message schema. This keeps the agent workflow
+portable and makes STT providers replaceable.
+
+Production questions to answer in an interview include:
+
+- What happens if the browser disconnects while audio is still being sent?
+- Can the provider session be closed more than once safely?
+- Is the queue bounded if recognition is slower than audio ingestion?
+- How are duplicate, late, cancelled, or out-of-order events handled?
+- Which events are visible to the user, and which can trigger reasoning/tools?
+- How are final-transcript latency, endpointing accuracy, and critical-entity
+  accuracy measured?
+
 ## 4. VAD, endpointing, and semantic turns
 
 These are related but different:
