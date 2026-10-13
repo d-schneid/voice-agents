@@ -145,6 +145,70 @@ TransportEvent =
 WebRTC and telephony adapters can then differ in codec and lifecycle details
 without changing tool authorization or conversation policy.
 
+### Browser-server WebSockets and transport adaptation
+
+A demo may use a browser WebSocket as its real-time, bidirectional connection:
+
+```text
+browser microphone/audio player
+          <==== WSS: audio + typed events ====> server
+             -> agent runtime -> tools/providers
+```
+
+This is a reasonable teaching and prototype architecture because one
+persistent connection can carry client events, server events, audio chunks,
+heartbeats, and lifecycle notifications. It is not the only production
+transport, and it is important to distinguish three cases:
+
+| Connection | What it carries | Typical use |
+| --- | --- | --- |
+| Browser WebSocket | Application-defined audio/control messages over WSS | Simple demo, server-controlled media, captions and events |
+| WebRTC | Negotiated realtime media plus optional data channel | Browser/mobile production audio with low-latency media features |
+| Telephony provider WebSocket | Provider-defined audio and control protocol | PSTN/SIP calls through Twilio, Vonage, or another carrier |
+
+The agent runtime should not depend on the demo's message format. Normalize
+each transport into the `AudioFrame` and `TransportEvent` contracts above.
+Then the same turn manager, tool broker, workflow state, and playback policy
+can operate behind a browser WebSocket, a WebRTC media track, or a
+telephony adapter.
+
+#### Twilio and Vonage examples
+
+- **Twilio Media Streams** supports unidirectional streams for receiving call
+  audio and bidirectional streams for receiving caller audio while sending
+  audio back to the call. Its WebSocket protocol has lifecycle, media, DTMF,
+  mark, and stop messages; applications must validate the `X-Twilio-Signature`
+  and use secure WebSockets. The documented bidirectional stream has provider
+  constraints, including one inbound track and inbound-only DTMF.
+- **Vonage Voice WebSockets** use a persistent full-duplex connection where
+  binary messages carry audio and text messages carry JSON events/commands.
+  An NCCO `connect` action selects the `wss://` endpoint and audio format.
+  Vonage supports connection authorization, playback-buffer control, DTMF
+  events, and event webhooks for connection failures/disconnects.
+
+These are not identical protocols. They differ in codec/sample-rate
+negotiation, message envelopes, authentication, playback buffering, DTMF,
+disconnect semantics, and webhook behavior. The adapter owns those details;
+the conversation runtime should see normalized events and must still apply
+its own authorization, sequencing, backpressure, cancellation, and
+idempotency rules.
+
+For an interview, say:
+
+> “The demo's browser WebSocket is a transport choice, not the agent
+> architecture. I would keep a typed transport interface and swap the adapter
+> for WebRTC in a browser production path or Twilio/Vonage media WebSockets
+> for telephony. I would not forward provider packets directly into business
+> logic: I would authenticate the connection, validate message types and
+> sequence/timestamps, normalize audio, bound buffers, handle disconnects and
+> barge-in, and keep tools behind the server-side policy boundary.”
+
+Official references: [MDN WebSocket API](https://developer.mozilla.org/en-US/docs/Web/API/WebSockets_API),
+[WebRTC overview](https://webrtc.org/getting-started/overview),
+[Twilio Media Streams](https://www.twilio.com/docs/voice/media-streams),
+[Twilio WebSocket messages](https://www.twilio.com/docs/voice/media-streams/websocket-messages),
+and [Vonage Voice WebSockets](https://developer.vonage.com/en/voice/voice-api/concepts/websockets).
+
 ## 3. Speech-to-speech, cascaded, and hybrid pipelines
 
 There are three useful families. None is universally best.
