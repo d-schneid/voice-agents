@@ -1000,6 +1000,78 @@ connection, telephony callback, tool request, reconnect token, and provider
 event must not be able to select another tenant by changing a field in its
 payload.
 
+### Streaming multiple tenants safely
+
+Do not create one global decoder or one global agent state for all tenants.
+Create one logical runtime per live conversation, then multiplex independent
+I/O tasks across shared workers:
+
+```text
+Tenant A / session 1 ─┐
+Tenant A / session 2 ─┼─> shared ASGI/event-loop workers
+Tenant B / session 3 ─┘          |
+                                  +─ session-specific decoder
+                                  +─ session-specific queues
+                                  +─ session-specific STT/LLM/TTS state
+                                  +─ tenant-scoped tools and storage
+```
+
+A `SessionRuntime` should own at least:
+
+```text
+tenant_id, subject_id, session_id
+audio decoder/resampler/jitter state
+input/output queues and sequence positions
+VAD and turn state
+STT, LLM, and TTS provider sessions
+playback generation and cancellation state
+conversation/checkpointer key
+tool authorization context
+```
+
+The shared worker may interleave I/O:
+
+```text
+decode session A -> await STT A
+decode session B -> await STT B
+receive STT A  -> generate A
+receive STT B  -> generate B
+```
+
+That is safe only when the state belongs to the session. Base64 decoding is
+per-payload, but resampling, jitter buffering, Opus decoding, VAD, playback
+ordering, and other stateful audio operations must never be shared across
+sessions.
+
+If a provider requires one WebSocket per session, keep that connection inside
+the `SessionRuntime`. If a provider supports multiplexing several sessions over
+one connection, demultiplex only by a trusted provider stream/session ID—not
+by arrival order—and reject unknown or mismatched IDs. Every normalized event
+should retain `tenant_id`, `session_id`, `turn_id`, and `trace_id`.
+
+Use bounded per-session queues and per-tenant limits:
+
+- maximum input/output audio queue size;
+- maximum active sessions and provider connections;
+- maximum audio minutes, tool concurrency, and spend;
+- fair scheduling so one tenant cannot starve another;
+- admission control, throttling, or documented degradation when capacity is
+  exhausted.
+
+Never trust a `tenant_id` included in an arbitrary audio message. The
+authenticated session binding determines the tenant. On disconnect, cancel
+that runtime's child tasks, close its provider sessions, flush safe audit
+state, and release only that session's resources.
+
+An interview-ready explanation is:
+
+> “I would not use one global audio decoder or agent state. Each authenticated
+> conversation gets a tenant-bound session runtime with its own decoder,
+> queues, VAD/STT/LLM/TTS state, playback generation, and tool authority.
+> Shared workers multiplex I/O but never mutable session state. If a provider
+> multiplexes streams, I demultiplex by a trusted stream ID, enforce bounded
+> per-session queues and per-tenant quotas, and reject cross-session events.”
+
 ### Snapshot tenant policy at session start
 
 Resolve and version the tenant's configuration before the conversation starts:
