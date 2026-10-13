@@ -528,6 +528,35 @@ The concise interview distinction is:
 > processes/services handle CPU-heavy work, and idempotency reconciles effects
 > that cannot be safely cancelled.”
 
+### WSGI versus ASGI
+
+The tutorial's long-lived browser WebSocket endpoint is an **ASGI-shaped**
+problem, not a traditional WSGI request:
+
+| Interface | Core model | Voice-agent relevance |
+| --- | --- | --- |
+| **WSGI** | Synchronous HTTP request/response callable returning an iterable of bytes | Useful for conventional REST endpoints and existing synchronous Python applications; not a natural native interface for long-lived bidirectional WebSockets |
+| **ASGI** | Async application receiving and sending protocol events for HTTP and WebSocket connection lifecycles | Natural fit for persistent voice sessions, streaming audio, disconnect events, cancellation, and concurrent connections |
+
+ASGI provides the Python server/application boundary; it does not make the
+voice agent correct or scalable. The application still needs bounded queues,
+provider lifecycle management, authentication, backpressure, and durable
+workflow state. Keep blocking WSGI-era libraries or synchronous SDKs out of
+the ASGI event loop, or isolate them with an async client, `to_thread`, or a
+worker service.
+
+An interview-ready distinction is:
+
+> “WSGI models a synchronous HTTP request and response. ASGI models a
+> connection plus asynchronous receive/send events, including WebSockets.
+> For a browser voice demo I would expose the realtime endpoint through an
+> ASGI framework/server, while ordinary REST or legacy WSGI applications could
+> remain separate or be mounted behind the same deployment boundary.”
+
+Do not describe ASGI as a replacement for WebRTC. ASGI is the Python
+application interface; WebSocket, WebRTC, SIP, or a telephony provider are
+transport/media choices that can be terminated or adapted by the server.
+
 The implementation's producer-consumer tasks and merged async iterators are
 important: a provider can continue sending events while the application
 forwards upstream events or sends new text downstream. In a production
@@ -1305,6 +1334,8 @@ interruption, turn detection, and tool calling:
 - [LangChain streaming](https://docs.langchain.com/oss/python/langchain/streaming)
 - [LangChain short-term memory/checkpointers](https://docs.langchain.com/oss/python/langchain/short-term-memory)
 - [`asyncio` — Python asynchronous I/O](https://docs.python.org/3/library/asyncio.html)
+- [PEP 3333 — WSGI](https://peps.python.org/pep-3333/)
+- [ASGI 3.0 specification](https://asgi.readthedocs.io/en/latest/specs/main.html)
 - [OpenAI function calling guide](https://platform.openai.com/docs/guides/function-calling)
 - [Google Cloud Speech-to-Text streaming recognition](https://cloud.google.com/speech-to-text/docs/streaming-recognize)
 - [Google Cloud Text-to-Speech streaming synthesis](https://cloud.google.com/text-to-speech/docs/streaming-synthesize)
