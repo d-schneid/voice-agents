@@ -473,6 +473,61 @@ This is more precise than saying “async is always better.” The decision is
 about keeping the event loop responsive while making ownership, cancellation,
 timeouts, and side-effect semantics explicit.
 
+### Highest-value Python concurrency patterns
+
+These are the common concepts most worth explaining in an interview:
+
+**Bounded queues and backpressure**
+
+```python
+audio_queue = asyncio.Queue(maxsize=32)
+```
+
+The producer should wait, drop stale speculative work, or enter a documented
+degraded mode when the queue is full. An unbounded queue turns a slow STT/TTS
+provider or browser into a memory leak. Apply the same rule to audio frames,
+transcript events, tool work, and playback.
+
+**Structured task groups and bounded fan-out**
+
+Use `asyncio.TaskGroup` for tasks with one lifecycle owner. Use
+`asyncio.gather` only when operations are genuinely independent, and use an
+`asyncio.Semaphore` to cap concurrent provider or tool calls:
+
+```python
+limit = asyncio.Semaphore(8)
+
+async def bounded_lookup(item):
+    async with limit:
+        return await lookup(item)
+```
+
+Parallelize independent read-only work; serialize or transactionally protect
+conflicting writes.
+
+**One owner for mutable session state**
+
+Give each live session one worker/actor that owns turn state, playback
+generation, event ordering, and tool-result application. Other tasks send
+typed messages to that owner. If shared mutation is unavoidable, use a
+per-session `asyncio.Lock`; do not use one global lock for all calls.
+
+**Graceful shutdown**
+
+On disconnect, deployment shutdown, or provider failure: stop admitting work,
+cancel child tasks, close provider sessions, drain or checkpoint only safe
+work, flush audit/usage state, and release resources. A task that is cancelled
+must not leave an open WebSocket, timer, queue consumer, or uncommitted
+side-effect ambiguity.
+
+The concise interview distinction is:
+
+> “Asyncio gives me cooperative concurrency for I/O. Queues provide flow
+> control, task groups provide lifecycle ownership, semaphores bound fan-out,
+> and a per-session owner prevents races. Threads isolate blocking I/O,
+> processes/services handle CPU-heavy work, and idempotency reconciles effects
+> that cannot be safely cancelled.”
+
 The implementation's producer-consumer tasks and merged async iterators are
 important: a provider can continue sending events while the application
 forwards upstream events or sends new text downstream. In a production
