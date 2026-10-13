@@ -644,7 +644,8 @@ It uses producer-consumer concurrency in the opposite direction from STT:
 
 - one path forwards upstream events and sends agent text to the TTS provider;
 - another receives synthesized audio chunks;
-- a merge operation combines both streams for downstream consumers.
+- the tutorial's `merge_async_iters` helper combines both streams for
+  downstream consumers.
 
 TTS is therefore not a final serialization step. It is a realtime consumer of
 agent text and a producer of audio, with its own lifecycle, buffering, format,
