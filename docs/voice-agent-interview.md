@@ -561,7 +561,59 @@ async def interrupt(turn_id, reason):
     )
 ```
 
-## 5. Media plane and control plane
+## 5. LangChain agent stage in the cascaded pipeline
+
+In the tutorial, the agent stage consumes the STT event stream and only starts
+the LangChain agent for finalized `stt_output` events. Provisional
+`stt_chunk` events can be shown as captions or used for low-risk speculation,
+but they should not directly trigger irreversible tools.
+
+The agent then streams response content incrementally:
+
+```text
+final transcript -> LangChain agent -> agent_chunk 1 -> agent_chunk 2 -> ...
+```
+
+This lets the TTS stage start synthesizing before the complete answer exists.
+The agent stage therefore transforms a stream of voice events into a stream of
+agent events rather than returning one completed string.
+
+### Key concepts
+
+- **Final-turn gating:** finalized speech is the normal boundary for reasoning;
+  the policy can be more aggressive for read-only work and more conservative
+  for high-risk actions.
+- **Streamed agent output:** LangChain's `astream_events`/message stream
+  exposes incremental content for downstream TTS.
+- **Voice-specific prompting:** responses should be concise and speakable;
+  avoid markdown, emojis, tables, and other text that sounds unnatural when
+  synthesized.
+- **Conversation memory:** a checkpointer keyed by a stable `thread_id`
+  preserves context across turns. The tutorial's in-memory saver is useful for
+  a demo but loses state on process restart; production needs durable,
+  tenant-scoped storage and a compaction strategy.
+- **Tool boundary:** the LangChain agent can propose tool calls, but the
+  application must authenticate the user, validate arguments, authorize the
+  action, require confirmation where appropriate, enforce idempotency, and
+  verify the result before speaking success.
+- **Tracing:** LangSmith or an equivalent system can trace model/tool steps and
+  latency, but transcripts, audio, and tool arguments must be redacted and
+  access-controlled according to the data policy.
+
+The tutorial's order tools return illustrative strings. They do not demonstrate
+transactionality, authorization, duplicate prevention, or a real kitchen
+system. Call that out explicitly in an interview.
+
+An interview-ready explanation is:
+
+> “The agent stage is a stateful, streamed text workflow between finalized
+> speech recognition and speech synthesis. It owns reasoning and orchestration,
+> but not raw media transport or unrestricted business authority. I would use
+> the checkpointer for conversational context, keep authoritative workflow
+> state outside the prompt, and make every tool call pass through a typed,
+> authenticated, idempotent policy boundary.”
+
+## 6. Media plane and control plane
 
 The media plane is optimized for continuous, time-sensitive data. The control
 plane is optimized for typed, authenticated, durable decisions. Mixing them
@@ -587,7 +639,7 @@ A dropped audio packet may be tolerated or concealed; a dropped
 `payment.authorized` event cannot be treated the same way. Assign each event a
 delivery and durability expectation.
 
-## 6. Typed events, ownership, and invariants
+## 7. Typed events, ownership, and invariants
 
 Use a versioned event envelope rather than passing arbitrary dictionaries
 between components:
@@ -629,7 +681,7 @@ The model can propose intent; it does not own the truth of a record. The
 frontend can display a result; it does not own authorization. A transcript can
 describe an action; it does not prove that action occurred.
 
-## 7. Tools: authority, authentication, confirmation, and idempotency
+## 8. Tools: authority, authentication, confirmation, and idempotency
 
 Tool use is where a conversational system becomes an agent. Treat every model
 tool call as untrusted input.
@@ -678,7 +730,7 @@ The authoritative service should atomically record the key and result. If a
 client receives an unknown outcome, query by the key rather than blindly
 executing again.
 
-## 8. Deterministic workflows for high-risk actions
+## 9. Deterministic workflows for high-risk actions
 
 Use a state machine or workflow engine for actions such as payments,
 transfers, refunds, account recovery, destructive changes, regulated
@@ -708,7 +760,7 @@ Each state should define allowed inputs, timeouts, retry behavior, audit
 requirements, and whether a transition is reversible. A workflow must never
 say “done” merely because the model generated a successful-sounding sentence.
 
-## 9. Lifecycle, reconnect, and resume
+## 10. Lifecycle, reconnect, and resume
 
 Treat the session lifecycle as a distributed-systems problem.
 
@@ -752,7 +804,7 @@ was already applied.
 Avoid pretending that a new connection is a continuation if identity,
 authorization, or workflow state cannot be verified.
 
-## 10. Fallbacks and graceful degradation
+## 11. Fallbacks and graceful degradation
 
 Plan fallbacks before production:
 
@@ -772,7 +824,7 @@ Plan fallbacks before production:
 A fallback must preserve the same authorization, confirmation, audit, and
 business invariants as the primary path.
 
-## 11. Safety, privacy, consent, and telephony fraud
+## 12. Safety, privacy, consent, and telephony fraud
 
 ### Safety and prompt injection
 
@@ -816,7 +868,7 @@ Outbound voice systems are attractive fraud targets. Use:
 - Alerts for repeated failed identity checks, high-cost destinations, and
   unusual after-hours traffic.
 
-## 12. Evaluation, observability, and cost
+## 13. Evaluation, observability, and cost
 
 ### Evaluation dimensions
 
@@ -884,7 +936,7 @@ Track cost by tenant, workflow, provider, and fallback path. Add budgets and
 rate limits that fail safely before an outage becomes an unexpectedly large
 bill.
 
-## 13. Implementation sketch
+## 14. Implementation sketch
 
 The following is intentionally provider-neutral pseudocode. It illustrates
 ownership and cancellation, not a drop-in SDK:
@@ -937,7 +989,7 @@ Production code should make event ordering, ownership, timeouts, cancellation,
 and error classes explicit. Avoid broad exception handlers that turn an
 unknown result into a success-shaped response.
 
-## 14. Interview questions and strong answer patterns
+## 15. Interview questions and strong answer patterns
 
 ### Architecture
 
@@ -1007,7 +1059,7 @@ completed task.
 Switch only to a path with equivalent identity, policy, confirmation, audit,
 and business invariants; otherwise transfer or defer safely.
 
-## 15. Source links and scope notes
+## 16. Source links and scope notes
 
 The links below are starting points for primary documentation and standards.
 Provider capabilities and terms change, so verify the current version and
