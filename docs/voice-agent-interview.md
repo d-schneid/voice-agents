@@ -733,6 +733,32 @@ async def interrupt(turn_id, reason):
     )
 ```
 
+### Filler words, hesitations, and backchannels
+
+Words such as “uh,” “um,” “hmm,” and “let me think” are part of the
+interaction signal, not merely transcript noise. Handle them differently at
+each boundary:
+
+- Preserve raw audio and the original transcript for audit, debugging, and
+  evaluation.
+- Optionally normalize harmless fillers for intent extraction, but keep a
+  separate normalized representation instead of overwriting the raw record.
+- Do not remove hesitation around corrections or critical values such as names,
+  dates, quantities, addresses, or account numbers.
+- Distinguish a short backchannel (“mm-hm”, “right”) from a true interruption
+  or a completed turn; this is a turn-detection policy, not just a regex.
+- Do not send partial STT artifacts or repeated provisional text directly to
+  TTS.
+- Keep agent filler output intentional and brief. A short acknowledgment can
+  make the interaction feel natural, while accidental repeated “um”/“uh”
+  output increases latency and sounds unreliable.
+
+Filler handling is language- and domain-dependent. Evaluate whether
+normalization improves intent and critical-entity accuracy without increasing
+false endpoint detection, missed interruptions, or loss of meaningful
+disfluency. For high-risk workflows, preserve the raw evidence and require
+the normal clarification and confirmation path.
+
 ## 5. LangChain agent stage in the cascaded pipeline
 
 In the tutorial, the agent stage consumes the STT event stream and only starts
