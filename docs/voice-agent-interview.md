@@ -392,6 +392,12 @@ provisional transcript; it waits for a usable/finalized turn. That is a
 reasonable correctness trade-off, while speculative generation is an
 optional optimization with cancellation and wasted-work costs.
 
+In the LangChain implementation, `RunnableGenerator` composes these
+async-generator stages and `pipeline.atransform(...)` connects the browser
+audio stream to the final event stream. That is framework-specific plumbing;
+the durable architectural idea is a typed stream of normalized events between
+replaceable stages.
+
 The implementation's producer-consumer tasks and merged async iterators are
 important: a provider can continue sending events while the application
 forwards upstream events or sends new text downstream. In a production
@@ -449,10 +455,17 @@ The STT adapter should own provider-specific details:
 
 - WebSocket connection and termination lifecycle;
 - audio encoding, sample rate, channels, and chunk validation;
+- provider turn-formatting/endpointing configuration and its semantics;
 - provider message parsing and sequence handling;
 - mapping provider events to normalized application events;
 - timeout, reconnect, and provider-error behavior;
 - idempotent cleanup when both the audio task and outer pipeline terminate.
+
+In the tutorial's concrete example, the provider connection is configured for
+16 kHz PCM with automatic turn formatting, and a provider `Turn` is mapped to
+either a provisional transcript event or a finalized `stt_output` event.
+Those values are tutorial/provider choices, not universal voice-agent
+requirements.
 
 The rest of the runtime should consume normalized events rather than AssemblyAI
 or another provider's raw message schema. This keeps the agent workflow
@@ -583,8 +596,10 @@ agent events rather than returning one completed string.
 - **Final-turn gating:** finalized speech is the normal boundary for reasoning;
   the policy can be more aggressive for read-only work and more conservative
   for high-risk actions.
-- **Streamed agent output:** LangChain's `astream_events`/message stream
-  exposes incremental content for downstream TTS.
+- **Streamed agent output:** the tutorial uses LangChain's
+  `astream_events(version="v3")` and `stream.messages` to expose incremental
+  text content for downstream TTS. Treat the exact API version as
+  framework-specific and verify it against the current LangChain release.
 - **Voice-specific prompting:** responses should be concise and speakable;
   avoid markdown, emojis, tables, and other text that sounds unnatural when
   synthesized.
@@ -592,6 +607,9 @@ agent events rather than returning one completed string.
   preserves context across turns. The tutorial's in-memory saver is useful for
   a demo but loses state on process restart; production needs durable,
   tenant-scoped storage and a compaction strategy.
+- **Agent construction:** the tutorial uses a LangChain `create_agent` with
+  order tools and a text model. The model is replaceable, but the agent's
+  tool boundary and durable application state must remain provider-independent.
 - **Tool boundary:** the LangChain agent can propose tool calls, but the
   application must authenticate the user, validate arguments, authorize the
   action, require confirmation where appropriate, enforce idempotency, and
@@ -658,6 +676,14 @@ The tutorial's provider client is intentionally minimal. A production TTS
 adapter should also handle provider connection errors, timeouts, explicit
 completion signals, idempotent close, bounded playback queues, cancellation,
 and fallback to captions, text, pre-recorded audio, or a human handoff.
+
+In the concrete example, the Cartesia adapter sends text over a WebSocket,
+decodes returned audio payloads, and emits raw PCM audio events using the
+configured voice, model, encoding, and sample rate. The tutorial's exact
+payload shape and audio settings belong in the provider adapter; the rest of
+the runtime should consume normalized audio events. Verify that incremental
+text uses the intended provider continuation/context semantics rather than
+creating unrelated utterances for every token or chunk.
 
 An interview-ready explanation is:
 
@@ -1143,6 +1169,10 @@ guarantees. They are useful for comparing concepts such as streaming,
 interruption, turn detection, and tool calling:
 
 - [OpenAI Realtime API guide](https://platform.openai.com/docs/guides/realtime)
+- [LangChain voice-agent tutorial](https://docs.langchain.com/oss/python/langchain/voice-agent)
+- [LangChain voice sandwich demo](https://github.com/langchain-ai/voice-sandwich-demo)
+- [LangChain streaming](https://docs.langchain.com/oss/python/langchain/streaming)
+- [LangChain short-term memory/checkpointers](https://docs.langchain.com/oss/python/langchain/short-term-memory)
 - [OpenAI function calling guide](https://platform.openai.com/docs/guides/function-calling)
 - [Google Cloud Speech-to-Text streaming recognition](https://cloud.google.com/speech-to-text/docs/streaming-recognize)
 - [Google Cloud Text-to-Speech streaming synthesis](https://cloud.google.com/text-to-speech/docs/streaming-synthesize)
