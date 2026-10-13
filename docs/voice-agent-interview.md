@@ -971,7 +971,136 @@ The authoritative service should atomically record the key and result. If a
 client receives an unknown outcome, query by the key rather than blindly
 executing again.
 
-## 10. Deterministic workflows for high-risk actions
+## 10. Multi-tenant voice-agent architecture
+
+Multi-tenancy is more than putting a `tenant_id` column on a conversation
+table. Tenant context must be a first-class security and routing invariant
+across identity, realtime sessions, agent configuration, tools, storage,
+providers, quotas, billing, and observability.
+
+### Establish and propagate tenant context
+
+Bind the authenticated subject to a tenant before opening the realtime session:
+
+```text
+subject_id + tenant_id + roles/scopes
+        -> session_id + short-lived session credential
+        -> tenant-scoped runtime, tools, storage, and providers
+```
+
+Do not trust a tenant ID supplied in an arbitrary browser message. Resolve it
+from a validated identity token or server-side session record, and bind:
+
+```text
+session_id -> tenant_id -> authenticated_subject -> authorized roles
+```
+
+Re-check that binding at every sensitive boundary. A WebSocket or WebRTC
+connection, telephony callback, tool request, reconnect token, and provider
+event must not be able to select another tenant by changing a field in its
+payload.
+
+### Snapshot tenant policy at session start
+
+Resolve and version the tenant's configuration before the conversation starts:
+
+- enabled tools and role permissions;
+- system instructions and agent version;
+- model, voice, language, and provider routing;
+- region and data-residency policy;
+- retention, recording, and redaction rules;
+- quotas, spend limits, and concurrency limits;
+- escalation and human-handoff policy.
+
+Keep this configuration application-controlled and immutable for the session,
+or explicitly journal any policy change. Do not silently allow a tenant admin
+or model-generated text to change security-critical policy mid-call.
+
+### Enforce isolation at every data boundary
+
+Include tenant ownership in durable records and event envelopes:
+
+```text
+tenant_id, subject_id, session_id, conversation_id,
+turn_id, tool_call_id, trace_id
+```
+
+Apply defense in depth:
+
+- tenant-scoped database queries, composite keys, and row-level policies;
+- tenant-prefixed object-storage paths for audio and transcripts;
+- tenant-specific vector/RAG namespaces;
+- tenant-aware cache keys and checkpointer/thread IDs;
+- tenant-scoped encryption, retention, deletion, and export;
+- support/admin tools that require an explicit tenant scope;
+- no raw transcript, audio, prompt, or credential leakage across tenants.
+
+Do not rely on every caller remembering to add a tenant filter. Put isolation
+in repository helpers, database policies, authorization middleware, and
+automated negative tests.
+
+### Scope tools, providers, and resources
+
+The tool broker must authorize the tuple
+`(tenant, subject, role, resource, action)` before execution. A model request
+is only a proposal. Validate resource ownership, confirmation, idempotency,
+and the authoritative result before speaking success.
+
+Keep provider credentials server-side. Choose deliberately between pooled
+platform credentials, per-tenant credentials, or dedicated provider projects.
+If tenants bring their own keys, encrypt, rotate, scope, and audit them.
+Never place secrets in prompts, transcripts, client code, or unrestricted
+telemetry.
+
+For telephony, map verified provider resources such as a signed webhook,
+account/subaccount, phone number, call ID, or stream ID to the tenant. Caller
+ID alone is not tenant authentication.
+
+### Protect against noisy neighbors
+
+Track and limit per tenant:
+
+- active sessions and WebSocket connections;
+- audio minutes and provider concurrency;
+- STT/LLM/TTS usage and tool calls;
+- queue depth, CPU/memory, and bandwidth;
+- spend, rate, and outbound-call budgets.
+
+Use admission control, fair scheduling, bounded queues, circuit breakers, and
+tenant-specific rate limits. A single tenant's spike must not exhaust shared
+provider quotas or event-loop capacity for other tenants.
+
+The main deployment trade-off is:
+
+| Model | Benefit | Cost |
+| --- | --- | --- |
+| Shared pool with logical isolation | Efficient and easy to operate | Highest blast radius; requires strong isolation and noisy-neighbor controls |
+| Dedicated workers/provider projects | Better isolation, quotas, and customization | More operational cost and slower provisioning |
+| Hybrid tiers | Match isolation to compliance and tenant value | More routing and configuration complexity |
+
+### Tenant-aware observability and tests
+
+Attach tenant and session attributes to traces, metrics, billing, and audit
+events, but restrict access and redact sensitive content. Test explicitly for:
+
+- cross-tenant reads, writes, memory retrieval, vector search, and cache hits;
+- session-token swapping and confused-deputy tool calls;
+- stale/replayed reconnect tokens and provider callbacks;
+- duplicate effects with tenant-scoped idempotency keys;
+- tenant deletion, export, retention, and legal hold;
+- noisy-tenant starvation and quota bypass;
+- tenant data appearing in prompts, logs, traces, recordings, or fallbacks.
+
+An interview-ready explanation is:
+
+> “I make tenant context part of identity, not user input. I bind every live
+> session to one tenant, snapshot its policy, enforce tenant scope in the tool
+> broker and storage layer, isolate memory/caches/providers, apply per-tenant
+> quotas and fair scheduling, and test cross-tenant leakage as a security
+> failure. Shared infrastructure is acceptable only with defense-in-depth
+> isolation and an explicit path to dedicated tiers.”
+
+## 11. Deterministic workflows for high-risk actions
 
 Use a state machine or workflow engine for actions such as payments,
 transfers, refunds, account recovery, destructive changes, regulated
@@ -1001,7 +1130,7 @@ Each state should define allowed inputs, timeouts, retry behavior, audit
 requirements, and whether a transition is reversible. A workflow must never
 say “done” merely because the model generated a successful-sounding sentence.
 
-## 11. Lifecycle, reconnect, and resume
+## 12. Lifecycle, reconnect, and resume
 
 Treat the session lifecycle as a distributed-systems problem.
 
@@ -1045,7 +1174,7 @@ was already applied.
 Avoid pretending that a new connection is a continuation if identity,
 authorization, or workflow state cannot be verified.
 
-## 12. Fallbacks and graceful degradation
+## 13. Fallbacks and graceful degradation
 
 Plan fallbacks before production:
 
@@ -1065,7 +1194,7 @@ Plan fallbacks before production:
 A fallback must preserve the same authorization, confirmation, audit, and
 business invariants as the primary path.
 
-## 13. Safety, privacy, consent, and telephony fraud
+## 14. Safety, privacy, consent, and telephony fraud
 
 ### Safety and prompt injection
 
@@ -1109,7 +1238,7 @@ Outbound voice systems are attractive fraud targets. Use:
 - Alerts for repeated failed identity checks, high-cost destinations, and
   unusual after-hours traffic.
 
-## 14. Evaluation, observability, and cost
+## 15. Evaluation, observability, and cost
 
 ### Evaluation dimensions
 
@@ -1177,7 +1306,7 @@ Track cost by tenant, workflow, provider, and fallback path. Add budgets and
 rate limits that fail safely before an outage becomes an unexpectedly large
 bill.
 
-## 15. Implementation sketch
+## 16. Implementation sketch
 
 The following is intentionally provider-neutral pseudocode. It illustrates
 ownership and cancellation, not a drop-in SDK:
@@ -1230,7 +1359,7 @@ Production code should make event ordering, ownership, timeouts, cancellation,
 and error classes explicit. Avoid broad exception handlers that turn an
 unknown result into a success-shaped response.
 
-## 16. Interview questions and strong answer patterns
+## 17. Interview questions and strong answer patterns
 
 ### Architecture
 
@@ -1300,7 +1429,7 @@ completed task.
 Switch only to a path with equivalent identity, policy, confirmation, audit,
 and business invariants; otherwise transfer or defer safely.
 
-## 17. Source links and scope notes
+## 18. Source links and scope notes
 
 The links below are starting points for primary documentation and standards.
 Provider capabilities and terms change, so verify the current version and
@@ -1321,6 +1450,9 @@ region before making an implementation or compliance commitment.
 - [NIST AI Risk Management Framework](https://www.nist.gov/itl/ai-risk-management-framework)
 - [NIST Privacy Framework](https://www.nist.gov/privacy-framework)
 - [NIST Digital Identity Guidelines](https://pages.nist.gov/800-63-4/)
+- [AWS SaaS Lens: Tenant Isolation](https://docs.aws.amazon.com/wellarchitected/latest/saas-lens/tenant-isolation.html)
+- [AWS SaaS Lens: Identity and Access Management](https://docs.aws.amazon.com/wellarchitected/latest/saas-lens/identity-and-access-management.html)
+- [OWASP Application Security Verification Standard](https://owasp.org/www-project-application-security-verification-standard/)
 
 ### Realtime speech and model documentation
 
