@@ -344,6 +344,76 @@ Official references: [AssemblyAI documentation](https://www.assemblyai.com/docs)
 [Cartesia overview](https://docs.cartesia.ai/get-started/overview.md), and
 [Cartesia realtime TTS](https://docs.cartesia.ai/get-started/realtime-text-to-speech-quickstart).
 
+### Async generators as streaming stage contracts
+
+The LangChain tutorial expresses each pipeline stage as an asynchronous stream
+transformation rather than a batch function:
+
+```text
+audio stream -> STT events -> agent text events -> TTS audio events
+```
+
+Conceptually, a stage has a contract like:
+
+```python
+async def stage(input_stream):
+    async for item in input_stream:
+        result = await process(item)
+        yield result
+```
+
+`async for` waits for the next item without blocking the event loop. `yield`
+emits that item immediately while preserving the generator's state so it can
+continue when the next item arrives. In the tutorial:
+
+1. The STT stage sends audio chunks to AssemblyAI and receives partial and
+   finalized transcript events concurrently.
+2. The agent stage starts after a finalized transcript and yields response
+   tokens as the LangChain agent generates them.
+3. The TTS stage sends text chunks to Cartesia while concurrently receiving
+   synthesized audio chunks.
+4. The WebSocket endpoint forwards each audio chunk to the browser for
+   playback instead of waiting for a complete response.
+
+The result is pipelining:
+
+```text
+without streaming:
+record -> transcribe -> generate -> synthesize -> play
+
+with streaming:
+audio arrives -> transcript finalizes -> tokens arrive -> audio plays
+                                      while later output is still generated
+```
+
+This reduces **time to first playable audio**, not necessarily total task
+completion time. The tutorial does not begin agent reasoning from every
+provisional transcript; it waits for a usable/finalized turn. That is a
+reasonable correctness trade-off, while speculative generation is an
+optional optimization with cancellation and wasted-work costs.
+
+The implementation's producer-consumer tasks and merged async iterators are
+important: a provider can continue sending events while the application
+forwards upstream events or sends new text downstream. In a production
+version, define the behavior when one side is faster than the other:
+
+- bound queues and apply backpressure;
+- cancel provider tasks when the browser disconnects or the user barges in;
+- attach a `generation_id` so stale TTS chunks cannot play after cancellation;
+- close STT/TTS sessions explicitly on every exit path;
+- validate audio encoding, sample rate, message type, and sequence;
+- distinguish provisional, final, cancelled, and failed events.
+
+An interview-ready explanation is:
+
+> “Each stage is an async stream transformation. STT turns audio frames into
+> transcript events, the agent turns finalized transcript events into streamed
+> text, and TTS turns text chunks into audio events. Because each stage awaits
+> network I/O and yields incrementally, the system is pipelined rather than
+> batch-oriented, reducing time to first audio. In production I would add
+> bounded queues, cancellation propagation, stale-generation rejection,
+> authentication, and durable state.”
+
 ## 4. VAD, endpointing, and semantic turns
 
 These are related but different:
