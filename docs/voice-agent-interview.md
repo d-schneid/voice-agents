@@ -398,6 +398,81 @@ audio stream to the final event stream. That is framework-specific plumbing;
 the durable architectural idea is a typed stream of normalized events between
 replaceable stages.
 
+### Python synchronous versus asynchronous handling
+
+Python `asyncio` is a strong fit for the voice loop because the workload is
+mostly concurrent I/O: WebSocket reads/writes, STT events, model tokens, TTS
+audio, timers, and cancellation. It does not make CPU-bound Python code
+parallel; it coordinates tasks while they wait for I/O.
+
+Use asynchronous code for the realtime path:
+
+```python
+async def handle_session(websocket):
+    async with provider_session() as stt:
+        async for frame in websocket.iter_bytes():
+            await stt.send_audio(frame)
+```
+
+Use synchronous code for short, deterministic, non-blocking operations such as
+argument validation, state transitions, formatting, and pure policy checks.
+Do not call blocking HTTP clients, synchronous SDKs, file operations, database
+drivers, or slow CPU work directly from an async event loop. They pause every
+session sharing that event loop.
+
+If a synchronous dependency cannot be replaced, isolate it deliberately:
+
+```python
+result = await asyncio.to_thread(sync_lookup, customer_id)
+```
+
+For CPU-heavy work, prefer a process pool, a native implementation that
+releases the GIL, or a separate worker service. `to_thread` is primarily an
+I/O/blocking-call escape hatch, not a general CPU-parallelism solution.
+
+### Structured concurrency and cancellation
+
+The STT producer and consumer, TTS sender and receiver, and session lifecycle
+tasks form one ownership tree. Use structured task management such as
+`asyncio.TaskGroup` where the supported Python version permits it, and make
+failure of one child cancel or reconcile its siblings. Use `asyncio.timeout`
+for bounded provider operations rather than waiting indefinitely.
+
+Every session should have a cancellation path:
+
+1. Browser/phone disconnects or barge-in is detected.
+2. Child tasks are cancelled.
+3. `CancelledError` is allowed to propagate after `finally` cleanup.
+4. Provider WebSockets, queues, timers, and playback handles are closed.
+5. Durable state records whether work completed, was cancelled, or is unknown.
+
+Do not swallow cancellation in a broad exception handler. Cancellation is a
+control signal, not an ordinary provider failure. A synchronous side effect
+already running in a worker thread may not stop when its awaiter is cancelled,
+so the operation still needs an idempotency key and authoritative reconciliation.
+
+### Sync/async boundaries for tools
+
+Keep the voice loop async even when a business tool is implemented
+synchronously. Wrap blocking reads or SDK calls at the boundary, but keep
+authorization, confirmation, idempotency, and result validation in the
+application policy layer. Do not let the model decide whether a blocking
+operation is safe merely because it can call the tool.
+
+For an interview, distinguish:
+
+| Work | Preferred handling |
+| --- | --- |
+| WebSocket/audio/model I/O | `async`/`await`, async iterators, bounded queues |
+| Short validation/state transition | synchronous function called from the event loop |
+| Blocking HTTP/SDK/database call | async client, or `asyncio.to_thread` as a contained fallback |
+| CPU-heavy denoising/encoding/ML | process/worker pool or dedicated service |
+| Irreversible tool effect | idempotent durable operation with reconciliation |
+
+This is more precise than saying “async is always better.” The decision is
+about keeping the event loop responsive while making ownership, cancellation,
+timeouts, and side-effect semantics explicit.
+
 The implementation's producer-consumer tasks and merged async iterators are
 important: a provider can continue sending events while the application
 forwards upstream events or sends new text downstream. In a production
@@ -1174,6 +1249,7 @@ interruption, turn detection, and tool calling:
 - [LangChain voice sandwich demo](https://github.com/langchain-ai/voice-sandwich-demo)
 - [LangChain streaming](https://docs.langchain.com/oss/python/langchain/streaming)
 - [LangChain short-term memory/checkpointers](https://docs.langchain.com/oss/python/langchain/short-term-memory)
+- [`asyncio` — Python asynchronous I/O](https://docs.python.org/3/library/asyncio.html)
 - [OpenAI function calling guide](https://platform.openai.com/docs/guides/function-calling)
 - [Google Cloud Speech-to-Text streaming recognition](https://cloud.google.com/speech-to-text/docs/streaming-recognize)
 - [Google Cloud Text-to-Speech streaming synthesis](https://cloud.google.com/text-to-speech/docs/streaming-synthesize)
