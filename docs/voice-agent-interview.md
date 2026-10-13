@@ -613,7 +613,62 @@ An interview-ready explanation is:
 > state outside the prompt, and make every tool call pass through a typed,
 > authenticated, idempotent policy boundary.”
 
-## 6. Media plane and control plane
+## 6. TTS stage and playback scheduling
+
+In the tutorial, the TTS stage consumes streamed `agent_chunk` events and
+produces audio events for the browser:
+
+```text
+agent text chunks -> TTS provider -> audio chunks -> playback queue
+```
+
+It uses producer-consumer concurrency in the opposite direction from STT:
+
+- one path forwards upstream events and sends agent text to the TTS provider;
+- another receives synthesized audio chunks;
+- a merge operation combines both streams for downstream consumers.
+
+TTS is therefore not a final serialization step. It is a realtime consumer of
+agent text and a producer of audio, with its own lifecycle, buffering, format,
+context, cancellation, and playback-clock responsibilities.
+
+### Key design decisions
+
+- **Incremental synthesis:** starting from text chunks reduces time to first
+  playable audio, but sending every token independently can sound choppy.
+  Buffer to phrase or clause boundaries when naturalness matters.
+- **Provider continuation/context:** verify that incremental chunks share the
+  intended provider context or continuation. Otherwise each chunk may be
+  synthesized as an unrelated utterance with inconsistent prosody.
+- **Explicit audio contract:** configure and validate encoding, sample rate,
+  channels, container, and frame boundaries at the provider boundary. The
+  output must match the browser, WebRTC, telephony, or media-gateway playback
+  path.
+- **Playback is a separate clock:** audio generated or received is not
+  necessarily audio the user heard. Track generated, queued, played, and
+  discarded audio separately for latency, safety, and transcript alignment.
+- **Barge-in:** stop or clear queued audio, cancel the corresponding
+  generation, invalidate stale chunks, and resume listening. Never allow late
+  audio from an interrupted response to play.
+- **Output policy:** if assistant speech must be checked before playback, buffer
+  audio until its transcript and policy check pass. This improves safety but
+  adds latency and needs an explicit timeout fallback.
+
+The tutorial's provider client is intentionally minimal. A production TTS
+adapter should also handle provider connection errors, timeouts, explicit
+completion signals, idempotent close, bounded playback queues, cancellation,
+and fallback to captions, text, pre-recorded audio, or a human handoff.
+
+An interview-ready explanation is:
+
+> “TTS is a streaming stage, not a final batch conversion. The agent emits text
+> while it is still generating, TTS emits audio while it is still synthesizing,
+> and the playback scheduler decides what the user actually hears. I would
+> optimize time to first useful audio, but keep phrase-level chunking,
+> generation-aware cancellation, bounded queues, explicit audio formats, and
+> playback-based observability.”
+
+## 7. Media plane and control plane
 
 The media plane is optimized for continuous, time-sensitive data. The control
 plane is optimized for typed, authenticated, durable decisions. Mixing them
@@ -639,7 +694,7 @@ A dropped audio packet may be tolerated or concealed; a dropped
 `payment.authorized` event cannot be treated the same way. Assign each event a
 delivery and durability expectation.
 
-## 7. Typed events, ownership, and invariants
+## 8. Typed events, ownership, and invariants
 
 Use a versioned event envelope rather than passing arbitrary dictionaries
 between components:
@@ -681,7 +736,7 @@ The model can propose intent; it does not own the truth of a record. The
 frontend can display a result; it does not own authorization. A transcript can
 describe an action; it does not prove that action occurred.
 
-## 8. Tools: authority, authentication, confirmation, and idempotency
+## 9. Tools: authority, authentication, confirmation, and idempotency
 
 Tool use is where a conversational system becomes an agent. Treat every model
 tool call as untrusted input.
@@ -730,7 +785,7 @@ The authoritative service should atomically record the key and result. If a
 client receives an unknown outcome, query by the key rather than blindly
 executing again.
 
-## 9. Deterministic workflows for high-risk actions
+## 10. Deterministic workflows for high-risk actions
 
 Use a state machine or workflow engine for actions such as payments,
 transfers, refunds, account recovery, destructive changes, regulated
@@ -760,7 +815,7 @@ Each state should define allowed inputs, timeouts, retry behavior, audit
 requirements, and whether a transition is reversible. A workflow must never
 say “done” merely because the model generated a successful-sounding sentence.
 
-## 10. Lifecycle, reconnect, and resume
+## 11. Lifecycle, reconnect, and resume
 
 Treat the session lifecycle as a distributed-systems problem.
 
@@ -804,7 +859,7 @@ was already applied.
 Avoid pretending that a new connection is a continuation if identity,
 authorization, or workflow state cannot be verified.
 
-## 11. Fallbacks and graceful degradation
+## 12. Fallbacks and graceful degradation
 
 Plan fallbacks before production:
 
@@ -824,7 +879,7 @@ Plan fallbacks before production:
 A fallback must preserve the same authorization, confirmation, audit, and
 business invariants as the primary path.
 
-## 12. Safety, privacy, consent, and telephony fraud
+## 13. Safety, privacy, consent, and telephony fraud
 
 ### Safety and prompt injection
 
@@ -868,7 +923,7 @@ Outbound voice systems are attractive fraud targets. Use:
 - Alerts for repeated failed identity checks, high-cost destinations, and
   unusual after-hours traffic.
 
-## 13. Evaluation, observability, and cost
+## 14. Evaluation, observability, and cost
 
 ### Evaluation dimensions
 
@@ -936,7 +991,7 @@ Track cost by tenant, workflow, provider, and fallback path. Add budgets and
 rate limits that fail safely before an outage becomes an unexpectedly large
 bill.
 
-## 14. Implementation sketch
+## 15. Implementation sketch
 
 The following is intentionally provider-neutral pseudocode. It illustrates
 ownership and cancellation, not a drop-in SDK:
@@ -989,7 +1044,7 @@ Production code should make event ordering, ownership, timeouts, cancellation,
 and error classes explicit. Avoid broad exception handlers that turn an
 unknown result into a success-shaped response.
 
-## 15. Interview questions and strong answer patterns
+## 16. Interview questions and strong answer patterns
 
 ### Architecture
 
@@ -1059,7 +1114,7 @@ completed task.
 Switch only to a path with equivalent identity, policy, confirmation, audit,
 and business invariants; otherwise transfer or defer safely.
 
-## 16. Source links and scope notes
+## 17. Source links and scope notes
 
 The links below are starting points for primary documentation and standards.
 Provider capabilities and terms change, so verify the current version and
