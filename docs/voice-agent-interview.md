@@ -218,6 +218,68 @@ Do not present a vendor's reported latency as a universal property of an
 architecture. End-to-end delay depends on capture, codec, network, queueing,
 VAD, model load, tokenization, synthesis, buffering, and playback.
 
+### Provider examples: AssemblyAI and Cartesia
+
+AssemblyAI and Cartesia are useful examples of specialized providers in a
+cascaded voice stack. They are not interchangeable model vendors:
+
+| Provider | Relevant capability | Typical place in the design |
+| --- | --- | --- |
+| AssemblyAI | Streaming and pre-recorded speech-to-text, turn events, speech understanding, and broader voice infrastructure | ASR/STT before the orchestrator |
+| Cartesia | Realtime text-to-speech through Sonic, speech-to-text and turn detection through Ink, voice models, and managed agents | TTS after the orchestrator, or an integrated voice-agent platform |
+
+The component-level flow is:
+
+```text
+incoming audio -> AssemblyAI streaming STT -> LLM/workflow/tools
+              -> incremental text -> Cartesia streaming TTS -> playback
+```
+
+This design is valuable in an interview because each boundary is visible and
+replaceable. The recognizer can emit partial and final transcripts; the
+orchestrator can validate or redact text before reasoning; and the synthesizer
+can start producing audio from incremental LLM text instead of waiting for a
+complete answer. The cost is extra coordination: each WebSocket, queue,
+timeout, cancellation path, audio format, and provider failure must be
+managed.
+
+Important provider-specific considerations:
+
+- **AssemblyAI streaming:** treat the WebSocket as a billable session and
+  explicitly terminate it on every normal and abnormal call path. For browser
+  use, mint a short-lived/temporary token from the backend rather than
+  exposing the API key. Preserve the distinction between provisional
+  transcript updates and finalized turns.
+- **Cartesia streaming TTS:** push text chunks over a streaming connection and
+  consume audio chunks through a bounded playback queue. On barge-in, stop
+  playback, invalidate the current generation, and discard queued audio from
+  that generation. Keep the audio format and sample rate explicit at the
+  provider boundary.
+- **Latency claims:** treat provider-advertised first-audio or end-to-end
+  numbers as vendor-reported. Measure time to first useful audio at actual
+  playback under the chosen transport, model, voice, network, and buffering
+  configuration.
+- **Managed products:** both providers also expose broader voice-agent
+  capabilities. Choosing a managed agent can reduce integration work; choosing
+  separate STT/TTS components preserves more control over prompts, tools,
+  policy, fallback providers, and intermediate evidence.
+
+An interview-ready comparison is:
+
+> “I would evaluate AssemblyAI and Cartesia as pipeline components, not choose
+> them from a single benchmark. I would compare endpointing and interruption
+> behavior, first partial/final transcript timing, first playable audio,
+> language and accent coverage, codecs and sample rates, session limits,
+> cancellation semantics, data retention and region, reliability, pricing,
+> rate limits, and fallback options. I would keep their APIs behind internal
+> STT/TTS interfaces so the business workflow does not depend on vendor event
+> names.”
+
+Official references: [AssemblyAI documentation](https://www.assemblyai.com/docs),
+[AssemblyAI streaming STT](https://www.assemblyai.com/docs/streaming/getting-started/transcribe-streaming-audio),
+[Cartesia overview](https://docs.cartesia.ai/get-started/overview.md), and
+[Cartesia realtime TTS](https://docs.cartesia.ai/get-started/realtime-text-to-speech-quickstart).
+
 ## 4. VAD, endpointing, and semantic turns
 
 These are related but different:
