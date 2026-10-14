@@ -4,47 +4,141 @@ Companion diagrams for the [voice-agent interview preparation guide](./voice-age
 The diagrams are intentionally provider-agnostic; provider names illustrate
 integration points, not required choices.
 
-## 1. End-to-end reference architecture
+## 1. Canonical production/interview architecture
 
 ```mermaid
 flowchart LR
-    U[Browser or phone user]
-    E[Transport edge<br/>WSS / WebRTC / SIP]
-    R[Realtime session runtime<br/>VAD · turns · cancellation]
-    S[Streaming STT<br/>partial + final events]
-    A[Agent orchestrator<br/>LLM · memory · workflow]
-    T[TTS provider<br/>streaming audio]
-    P[Playback scheduler<br/>queue · barge-in]
-    B[Tool broker<br/>auth · policy · idempotency]
-    D[(Authoritative business systems)]
-    J[(Event journal<br/>traces · metrics · redacted audit)]
+    subgraph CLIENTS[Channels]
+        B[Browser / mobile]
+        PH[Phone / PSTN]
+    end
 
-    U -->|audio in| E
-    E --> R
-    R -->|audio frames| S
-    S -->|transcript events| R
-    R -->|finalized turn| A
-    A -->|typed tool request| B
-    B --> D
-    D --> B
-    B -->|verified result| A
-    A -->|streamed text| T
-    T -->|audio chunks| P
-    P -->|audio out| E
-    E --> U
+    subgraph EDGE[Public edge]
+        G[Reverse proxy / load balancer<br/>TLS · WSS · rate limits]
+        AD[Transport adapters<br/>WebSocket · WebRTC · SIP/media]
+        ID[Identity + session issuance<br/>tenant binding · short-lived credentials]
+    end
 
-    R -.-> J
-    A -.-> J
-    B -.-> J
-    T -.-> J
+    subgraph RUNTIME[One SessionRuntime per tenant/session]
+        IQ[(Bounded input queue)]
+        RT[Realtime turn runtime<br/>normalized events · VAD · semantic turns<br/>cancellation · generation IDs]
+        OQ[(Bounded output queue)]
+    end
+
+    subgraph ENGINE[Voice engine]
+        STT[Streaming STT adapter]
+        AG[Agent orchestrator<br/>prompt · workflow · streaming]
+        TTS[Streaming TTS adapter]
+        S2S[Optional realtime S2S adapter]
+    end
+
+    subgraph CONTROL[Control plane]
+        TB[Tool broker<br/>schema · auth · confirmation · idempotency]
+        WS[Durable workflow state]
+        MEM[Short-term checkpoint<br/>long-term memory]
+        EJ[(Event journal<br/>traces · metrics · redacted audit)]
+    end
+
+    APP[(Authoritative business systems<br/>orders · bookings · identity · payments)]
+    JOBS[Async workers<br/>long-running tasks · CPU-heavy work]
+
+    B --> G
+    PH --> G
+    G --> AD
+    ID --> AD
+    AD --> IQ
+    IQ --> RT
+    RT -->|audio frames| STT
+    STT -->|partial/final events| RT
+    RT -->|confirmed turn| AG
+    AG -->|streamed text| TTS
+    TTS -->|audio chunks| OQ
+    OQ --> AD
+    AD --> G
+    G --> B
+    G --> PH
+
+    AG -.->|S2S is an alternative to STT+AG+TTS| S2S
+    S2S -.-> RT
+
+    AG -->|typed tool request| TB
+    TB --> APP
+    APP --> TB
+    TB -->|verified result| AG
+    AG --> WS
+    RT --> WS
+    AG <--> MEM
+    TB --> JOBS
+    RT -.-> EJ
+    AG -.-> EJ
+    TB -.-> EJ
+    AD -.-> EJ
 ```
 
-The media path is optimized for low latency. The control path owns
-authorization, durable state, tools, and audit evidence. A provider may
-collapse several boxes into one managed realtime service, but the ownership
-boundaries should remain explicit.
+Read the architecture as two cooperating planes:
 
-## 2. Cascaded streaming pipeline
+- **Media plane:** channels, adapters, audio queues, turn detection, model
+  streaming, playback, and cancellation. It is time-sensitive and must not
+  wait synchronously on slow business operations.
+- **Control plane:** identity, tenant policy, tools, confirmations, durable
+  workflow state, memory, billing, and audit. It is authoritative and must
+  not trust raw audio, transcripts, caller IDs, or model output.
+
+The diagram shows the **cascaded baseline**:
+
+```text
+audio -> STT -> agent/LLM -> TTS -> audio
+```
+
+For a speech-to-speech design, `S2S` replaces the STT/agent/TTS media path, but
+the session runtime, tool broker, durable state, tenant isolation, and
+observability boundaries remain.
+
+The most important invariant is:
+
+> One authenticated `SessionRuntime` owns mutable realtime state for exactly
+> one tenant/session. Shared workers may multiplex I/O, but must not share
+> decoder, VAD, playback, conversation, or tool state across sessions.
+
+## 2. One confirmed turn and tool call
+
+```mermaid
+sequenceDiagram
+    participant C as Browser / phone
+    participant E as Edge + transport adapter
+    participant R as SessionRuntime
+    participant S as STT provider
+    participant A as Agent / LLM
+    participant T as TTS provider
+    participant P as Tool broker
+    participant D as Business system
+
+    C->>E: Audio frame
+    E->>R: Normalized AudioFrame
+    R->>S: Stream audio
+    S-->>R: Partial transcript
+    R-->>C: Optional caption event
+    S-->>R: Final transcript / turn confirmed
+    R->>A: Finalized user turn + scoped context
+    A-->>R: Optional spoken preamble
+    R->>T: Stream speakable text
+    T-->>R: Audio chunks
+    R-->>E: Queue audio for playback
+    E-->>C: Audio output
+    A->>P: Structured tool request
+    P->>P: Validate tenant, identity, policy, confirmation, idempotency
+    P->>D: Authorized operation
+    D-->>P: Authoritative result
+    P-->>A: Typed tool result
+    A->>T: Verified spoken result
+```
+
+The tool call may occur while audio continues, but the broker—not the model or
+browser—owns authorization and side effects. If the user barges in, the
+runtime cancels playback/generation where possible and reconciles any tool
+operation that has already committed.
+
+## 3. Cascaded streaming pipeline
 
 ```mermaid
 flowchart LR
@@ -77,7 +171,7 @@ Partial transcripts can support captions or low-risk speculation. Normal
 reasoning and side effects should usually wait for a confirmed turn and pass
 through the tool broker.
 
-## 3. Speech-to-speech versus cascaded versus hybrid
+## 4. Speech-to-speech versus cascaded versus hybrid
 
 ```mermaid
 flowchart TB
@@ -104,7 +198,7 @@ flowchart TB
 | Cascaded | Inspectability, replacement, and policy control | More stages, buffering, and failure boundaries |
 | Hybrid | Fast conversation plus controlled high-risk workflows | More orchestration and synchronization |
 
-## 4. Browser transports and provider adapters
+## 5. Browser transports and provider adapters
 
 ```mermaid
 flowchart LR
@@ -133,7 +227,7 @@ The runtime should not depend on provider packet envelopes. Each adapter
 authenticates the connection, validates sequence/timestamps and audio format,
 then maps provider messages into internal events.
 
-## 5. Multi-tenant session isolation
+## 6. Multi-tenant session isolation
 
 ```mermaid
 flowchart TB
@@ -169,7 +263,7 @@ conversation, and tool state belongs to one `SessionRuntime`. If a provider
 multiplexes streams, demultiplex by a trusted provider stream ID, never by
 arrival order.
 
-## 6. User turn and barge-in state machine
+## 7. User turn and barge-in state machine
 
 ```mermaid
 stateDiagram-v2
@@ -195,7 +289,7 @@ On interruption, invalidate the response generation, clear queued audio, and
 discard late model/TTS events. A committed tool effect is reconciled rather
 than pretending it was cancelled.
 
-## 7. Structured tool-call flow
+## 8. Structured tool-call flow
 
 ```mermaid
 sequenceDiagram
@@ -224,7 +318,7 @@ sequenceDiagram
 The model proposes. The broker authorizes and executes. The application never
 treats arbitrary spoken text as an executable tool call.
 
-## 8. Short-term memory, compaction, and long-term memory
+## 9. Short-term memory, compaction, and long-term memory
 
 ```mermaid
 flowchart LR
@@ -249,7 +343,7 @@ Compaction reduces context size; it does not replace authoritative state.
 Long-term memory is promoted explicitly and must retain provenance, scope,
 retention, and deletion behavior.
 
-## 9. Python async execution model
+## 10. Python async execution model
 
 ```mermaid
 flowchart TB
