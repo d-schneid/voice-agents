@@ -45,6 +45,13 @@ flowchart LR
         S2S[Optional realtime S2S adapter]
     end
 
+    subgraph PROVIDERS[External inference providers]
+        STTP[STT inference provider]
+        LLMP[LLM / reasoning provider]
+        TTSP[TTS inference provider]
+        S2SP[Realtime S2S provider]
+    end
+
     subgraph CONTROL[Control plane]
         TB[Tool broker<br/>schema · auth · confirmation · idempotency]
         WS[Durable workflow state]
@@ -58,13 +65,21 @@ flowchart LR
     B --> G
     PH --> G
     G --> AD
-    ID --> AD
+    G -->|auth/session request| ID
+    ID -->|bound session credential| AD
+    ID -->|tenant policy snapshot| RT
     AD --> IQ
     IQ --> RT
     RT -->|audio frames| STT
+    STT -->|audio stream| STTP
+    STTP -->|partial/final events| STT
     STT -->|partial/final events| RT
     RT -->|confirmed turn| AG
+    AG -->|prompt + scoped context| LLMP
+    LLMP -->|tokens + structured proposals| AG
     AG -->|streamed text| TTS
+    TTS -->|speakable text| TTSP
+    TTSP -->|audio chunks| TTS
     TTS -->|audio chunks| OQ
     OQ --> AD
     AD --> G
@@ -72,7 +87,8 @@ flowchart LR
     G --> PH
 
     RT -.->|alternative media engine| S2S
-    S2S -.->|normalized audio/events| RT
+    S2S <--> S2SP
+    S2SP -.->|normalized audio/events| RT
 
     AG -->|typed tool request| TB
     TB --> APP
@@ -81,7 +97,9 @@ flowchart LR
     AG --> WS
     RT --> WS
     AG <--> MEM
-    TB --> JOBS
+    TB -->|long-running / CPU work| JOBS
+    JOBS -->|checkpoint / result| WS
+    TB -->|idempotency + outcome| WS
     RT -.-> EJ
     AG -.-> EJ
     TB -.-> EJ
@@ -102,6 +120,11 @@ The diagram shows the **cascaded baseline**:
 ```text
 audio -> STT -> agent/LLM -> TTS -> audio
 ```
+
+The adapter boxes are application-owned clients and policy boundaries; the
+provider boxes are external inference services. The application can replace a
+provider without changing the session, tenant, tool, or durable-state
+contracts.
 
 For a speech-to-speech design, `S2S` replaces the STT/agent/TTS media path, but
 the session runtime, tool broker, durable state, tenant isolation, and
