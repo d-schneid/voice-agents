@@ -4,6 +4,19 @@ Companion diagrams for the [voice-agent interview preparation guide](./voice-age
 The diagrams are intentionally provider-agnostic; provider names illustrate
 integration points, not required choices.
 
+### How to read these diagrams
+
+- Arrows show logical data/control flow; boxes do not necessarily mean separate
+  deployable services.
+- A dashed arrow is an alternative path or observation/control relationship,
+  not an additional mandatory hop.
+- The canonical design is a cascaded baseline. A realtime speech-to-speech
+  provider can replace the STT/agent/TTS media path, but not the application's
+  identity, tenant isolation, tool authority, durable state, or audit boundary.
+- Provider adapters translate provider-specific wire messages into normalized
+  session events. The `SessionRuntime` owns mutable state for one authenticated
+  tenant/session.
+
 ## 1. Canonical production/interview architecture
 
 ```mermaid
@@ -58,8 +71,8 @@ flowchart LR
     G --> B
     G --> PH
 
-    AG -.->|S2S is an alternative to STT+AG+TTS| S2S
-    S2S -.-> RT
+    RT -.->|alternative media engine| S2S
+    S2S -.->|normalized audio/events| RT
 
     AG -->|typed tool request| TB
     TB --> APP
@@ -118,7 +131,8 @@ sequenceDiagram
     R->>S: Stream audio
     S-->>R: Partial transcript
     R-->>C: Optional caption event
-    S-->>R: Final transcript / turn confirmed
+    S-->>R: Final transcript
+    R->>R: Semantic turn confirmation
     R->>A: Finalized user turn + scoped context
     A-->>R: Optional spoken preamble
     R->>T: Stream speakable text
@@ -269,14 +283,14 @@ arrival order.
 stateDiagram-v2
     [*] --> Listening
     Listening --> SpeechStarted: VAD detects speech
-    SpeechStarted --> Speaking: audio continues
-    Speaking --> EndpointCandidate: silence / endpoint signal
-    EndpointCandidate --> Speaking: user continues
+    SpeechStarted --> UserSpeaking: audio continues
+    UserSpeaking --> EndpointCandidate: silence / endpoint signal
+    EndpointCandidate --> UserSpeaking: user continues
     EndpointCandidate --> TurnConfirmed: semantic detector accepts
     TurnConfirmed --> Thinking: start agent
-    Thinking --> SpeakingAgent: first safe audio
-    SpeakingAgent --> Listening: response complete
-    SpeakingAgent --> Interrupted: user speech / explicit stop
+    Thinking --> AgentSpeaking: first safe audio
+    AgentSpeaking --> Listening: response complete
+    AgentSpeaking --> Interrupted: user speech / explicit stop
     Interrupted --> Listening: stop playback + cancel generation
     Thinking --> Listening: provider failure / timeout
     Listening --> Reconnecting: transport disconnect
