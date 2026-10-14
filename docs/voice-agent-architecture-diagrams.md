@@ -66,7 +66,8 @@ flowchart LR
 
     B --> G
     G -->|auth/session request| ID
-    ID -->|bound session credential| AD
+    ID -->|short-lived provider token| B
+    ID -->|server-side session binding| AD
     G -->|SDP/ICE signaling| AD
     B -->|WebRTC media tracks| AD
     B -.->|ICE candidates| ICE
@@ -132,6 +133,12 @@ WebRTC inbound track -> STT -> agent/LLM -> TTS -> WebRTC outbound track
 The reverse proxy/load balancer handles HTTPS/WSS signaling and public-edge
 policy; the WebRTC media track is negotiated through the media gateway and
 ICE/TURN path rather than being treated as an ordinary WSS audio stream.
+
+In a managed WebRTC deployment, the `short-lived provider token` is returned
+to the browser and presented directly to the managed service. The provider
+credential used to mint it and the application-side tenant/session binding
+remain server-side. With a self-hosted gateway, the same arrow represents a
+server-side credential/session handoff to the gateway instead.
 
 The adapter boxes are application-owned clients and policy boundaries; the
 provider boxes are external inference services. The application can replace a
