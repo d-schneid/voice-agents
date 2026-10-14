@@ -26,10 +26,12 @@ flowchart LR
         PH[Phone / PSTN]
     end
 
-    subgraph EDGE[Public edge]
-        G[Reverse proxy / load balancer<br/>TLS · WSS · rate limits]
-        AD[Transport adapters<br/>WebSocket · WebRTC · SIP/media]
+    subgraph EDGE[Public edge and signaling]
+        G[Reverse proxy / load balancer<br/>HTTPS · WSS signaling · rate limits]
         ID[Identity + session issuance<br/>tenant binding · short-lived credentials]
+        ICE[ICE service<br/>STUN · regional TURN]
+        AD[WebRTC/media gateway<br/>tracks · DTLS-SRTP · Opus]
+        TEL[Optional telephony/SIP adapter]
     end
 
     subgraph RUNTIME[One SessionRuntime per tenant/session]
@@ -63,12 +65,17 @@ flowchart LR
     JOBS[Async workers<br/>long-running tasks · CPU-heavy work]
 
     B --> G
-    PH --> G
-    G --> AD
     G -->|auth/session request| ID
     ID -->|bound session credential| AD
+    G -->|SDP/ICE signaling| AD
+    B -->|WebRTC media tracks| AD
+    B -.->|ICE candidates| ICE
+    AD -.->|STUN/TURN| ICE
+    PH --> TEL
+    ID -->|tenant binding| TEL
     ID -->|tenant policy snapshot| RT
     AD --> IQ
+    TEL --> IQ
     IQ --> RT
     RT -->|audio frames| STT
     STT -->|audio stream| STTP
@@ -82,9 +89,9 @@ flowchart LR
     TTSP -->|audio chunks| TTS
     TTS -->|audio chunks| OQ
     OQ --> AD
-    AD --> G
-    G --> B
-    G --> PH
+    OQ --> TEL
+    AD -->|outbound WebRTC track| B
+    TEL -->|telephony media| PH
 
     RT -.->|alternative media engine| S2S
     S2S <--> S2SP
@@ -115,11 +122,16 @@ Read the architecture as two cooperating planes:
   workflow state, memory, billing, and audit. It is authoritative and must
   not trust raw audio, transcripts, caller IDs, or model output.
 
-The diagram shows the **cascaded baseline**:
+The diagram shows the **cascaded baseline** with WebRTC as the primary browser
+media transport:
 
 ```text
-audio -> STT -> agent/LLM -> TTS -> audio
+WebRTC inbound track -> STT -> agent/LLM -> TTS -> WebRTC outbound track
 ```
+
+The reverse proxy/load balancer handles HTTPS/WSS signaling and public-edge
+policy; the WebRTC media track is negotiated through the media gateway and
+ICE/TURN path rather than being treated as an ordinary WSS audio stream.
 
 The adapter boxes are application-owned clients and policy boundaries; the
 provider boxes are external inference services. The application can replace a
@@ -140,8 +152,8 @@ The most important invariant is:
 
 ```mermaid
 sequenceDiagram
-    participant C as Browser / phone
-    participant E as Edge + transport adapter
+    participant C as Browser / WebRTC
+    participant E as WebRTC media gateway
     participant R as SessionRuntime
     participant S as STT provider
     participant A as Agent / LLM
@@ -149,7 +161,7 @@ sequenceDiagram
     participant P as Tool broker
     participant D as Business system
 
-    C->>E: Audio frame
+    C->>E: WebRTC inbound media track
     E->>R: Normalized AudioFrame
     R->>S: Stream audio
     S-->>R: Partial transcript
@@ -157,17 +169,18 @@ sequenceDiagram
     S-->>R: Final transcript
     R->>R: Semantic turn confirmation
     R->>A: Finalized user turn + scoped context
-    A-->>R: Optional spoken preamble
+    opt Tool needed
+        A->>P: Structured tool request
+        P->>P: Validate tenant, identity, policy, confirmation, idempotency
+        P->>D: Authorized operation
+        D-->>P: Authoritative result
+        P-->>A: Typed tool result
+    end
+    A-->>R: Speakable response / preamble
     R->>T: Stream speakable text
     T-->>R: Audio chunks
     R-->>E: Queue audio for playback
-    E-->>C: Audio output
-    A->>P: Structured tool request
-    P->>P: Validate tenant, identity, policy, confirmation, idempotency
-    P->>D: Authorized operation
-    D-->>P: Authoritative result
-    P-->>A: Typed tool result
-    A->>T: Verified spoken result
+    E-->>C: WebRTC outbound media track
 ```
 
 The tool call may occur while audio continues, but the broker—not the model or
@@ -179,22 +192,24 @@ operation that has already committed.
 
 ```mermaid
 flowchart LR
-    M[Microphone PCM frames]
+    M[WebRTC inbound media track]
+    GW[Media gateway<br/>DTLS-SRTP · Opus decode · PCM]
     Q1[(Bounded input queue)]
-    STT[STT WebSocket]
+    STT[STT provider stream]
     TE[Transcript events]
     TURN[Endpointing + semantic turn detection]
     LLM[Text agent / LLM]
     TOK[Streamed text chunks]
-    TTS[TTS WebSocket]
+    TTS[TTS provider stream]
     AQ[(Bounded playback queue)]
-    SP[Speaker]
+    OUT[WebRTC media gateway<br/>PCM -> Opus outbound track]
+    SP[Browser speaker]
 
-    M --> Q1 --> STT
+    M --> GW --> Q1 --> STT
     STT --> TE --> TURN
     TURN -->|turn confirmed| LLM
     LLM --> TOK --> TTS
-    TTS --> AQ --> SP
+    TTS --> AQ --> OUT --> SP
 ```
 
 The pipeline is incremental:
@@ -206,22 +221,24 @@ audio arrives -> partial transcript -> finalized turn
 
 Partial transcripts can support captions or low-risk speculation. Normal
 reasoning and side effects should usually wait for a confirmed turn and pass
-through the tool broker.
+through the tool broker. WebRTC is the browser/media transport in this diagram;
+the STT and TTS provider streams may use WebSockets or another provider-specific
+protocol behind their adapters.
 
 ## 4. Speech-to-speech versus cascaded versus hybrid
 
 ```mermaid
 flowchart TB
     subgraph S2S[Speech-to-speech]
-        SA[User audio] --> SM[Realtime multimodal model] --> SO[Assistant audio]
+        SA[WebRTC inbound audio] --> SM[Realtime multimodal model] --> SO[WebRTC outbound audio]
     end
 
     subgraph CAS[Cascaded]
-        CA[User audio] --> CSTT[STT] --> CLLM[Text agent] --> CTTS[TTS] --> CO[Assistant audio]
+        CA[WebRTC inbound audio] --> CSTT[STT] --> CLLM[Text agent] --> CTTS[TTS] --> CO[WebRTC outbound audio]
     end
 
     subgraph HYB[Hybrid]
-        HA[Realtime voice surface] --> HDEC{Risk / workflow decision}
+        HA[Realtime WebRTC voice surface] --> HDEC{Risk / workflow decision}
         HDEC -->|simple conversation| HOUT[Spoken response]
         HDEC -->|structured or high-risk task| HBACK[Auditable backend agent]
         HBACK --> HTOOLS[Authorized tools]
@@ -235,31 +252,31 @@ flowchart TB
 | Cascaded | Inspectability, replacement, and policy control | More stages, buffering, and failure boundaries |
 | Hybrid | Fast conversation plus controlled high-risk workflows | More orchestration and synchronization |
 
-## 5. Browser transports and provider adapters
+## 5. WebRTC browser transport and provider adapters
 
 ```mermaid
 flowchart LR
-    B[Browser]
+    B[Browser / mobile]
     SIG[HTTPS/WSS signaling<br/>auth · SDP · ICE]
-    WSS[Browser WSS adapter<br/>binary audio or JSON/Base64]
-    RTC[WebRTC adapter<br/>media tracks · Opus · ICE/TURN]
+    RTC[WebRTC media adapter<br/>tracks · Opus · DTLS-SRTP · ICE/TURN]
     TEL[Telephony adapter<br/>Twilio / Vonage / SIP]
     N[Normalized transport contract<br/>AudioFrame + TransportEvent]
     R[Session runtime]
 
     B --> SIG
-    B --> WSS
-    B --> RTC
-    WSS --> N
-    RTC --> N
+    SIG --> RTC
+    B -->|inbound media track| RTC
+    RTC -->|normalized inbound frames| N
     TEL --> N
     N --> R
     R --> N
-    N --> WSS
-    N --> RTC
+    N -->|outbound media track| RTC
+    RTC -->|audio to browser| B
     N --> TEL
 ```
 
+WebRTC carries the browser's negotiated media tracks; HTTPS/WSS is used for
+authentication and signaling. Telephony remains a separate provider adapter.
 The runtime should not depend on provider packet envelopes. Each adapter
 authenticates the connection, validates sequence/timestamps and audio format,
 then maps provider messages into internal events.
@@ -270,7 +287,7 @@ then maps provider messages into internal events.
 flowchart TB
     I[Validated identity<br/>subject · tenant · roles]
     C[Session creation<br/>short-lived credential]
-    A[ASGI / media edge]
+    A[ASGI signaling + WebRTC media edge]
     W1[Shared worker]
     W2[Shared worker]
 
