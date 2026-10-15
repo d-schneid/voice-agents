@@ -17,7 +17,6 @@ flowchart LR
     subgraph EDGE[Public edge and signaling]
         G[Reverse proxy / load balancer<br/>HTTPS · WSS signaling · rate limits]
         ID[Identity + session issuance<br/>tenant binding · short-lived credentials]
-        ICE[ICE service<br/>STUN · regional TURN]
         AD[WebRTC/media gateway<br/>tracks · DTLS-SRTP · Opus]
         TEL[Optional telephony/SIP adapter]
     end
@@ -33,8 +32,6 @@ flowchart LR
     ID -->|short-lived provider token| B
     G -->|SDP/ICE signaling| AD
     B -->|WebRTC media tracks| AD
-    B -.->|ICE candidates| ICE
-    AD -.->|STUN/TURN| ICE
     ID -->|server-side session binding| AD
     PH --> TEL
     ID -->|tenant binding| TEL
@@ -51,7 +48,7 @@ flowchart LR
 ## 2. Session runtime, voice engine, and external providers
 
 ```mermaid
-flowchart TB
+flowchart LR
     subgraph RUNTIME[One SessionRuntime per tenant/session]
         IQ[(Bounded input queue)]
         RT[Realtime turn runtime<br/>normalized events · VAD · semantic turns<br/>cancellation · generation IDs]
@@ -92,7 +89,7 @@ flowchart TB
 ## 3. Control plane
 
 ```mermaid
-flowchart TB
+flowchart LR
     subgraph EDGE[Public edge and signaling]
         ID[Identity + session issuance<br/>tenant binding · short-lived credentials]
     end
