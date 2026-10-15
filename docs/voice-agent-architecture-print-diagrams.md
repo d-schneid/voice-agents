@@ -1,162 +1,110 @@
 # Voice-agent architecture: print-friendly diagrams
 
-Focused diagrams for the [voice-agent interview preparation guide](./voice-agent-interview.md).
-Each diagram is intentionally standalone and can be printed independently.
-
-The architecture uses WebRTC as the primary browser media transport. HTTPS/WSS
-is used for authentication and signaling; STT/TTS provider streams are internal
-application connections behind provider adapters.
+Focused extracts of the canonical architecture in
+[voice-agent-architecture-diagrams.md](./voice-agent-architecture-diagrams.md).
+The component boxes and labels below are unchanged from the canonical diagram;
+only the relevant parts and arrows are extracted for printing.
 
 ## 1. Media plane
-
-This diagram shows only the time-sensitive media path and its transport
-boundaries. The media gateway owns WebRTC details; the session runtime receives
-normalized frames and returns normalized output audio.
 
 ```mermaid
 flowchart LR
     B[Browser / mobile]
-    SIG[HTTPS/WSS signaling<br/>auth · SDP · ICE]
-    ICE[STUN / regional TURN]
-    GW[WebRTC media gateway<br/>DTLS-SRTP · RTP · Opus]
+    PH[Phone / PSTN]
+    G[Reverse proxy / load balancer<br/>HTTPS · WSS signaling · rate limits]
+    ID[Identity + session issuance<br/>tenant binding · short-lived credentials]
+    ICE[ICE service<br/>STUN · regional TURN]
+    AD[WebRTC/media gateway<br/>tracks · DTLS-SRTP · Opus]
     TEL[Optional telephony/SIP adapter]
-    IN[Normalized inbound<br/>PCM AudioFrame]
-    RT[SessionRuntime<br/>per tenant/session]
-    OUT[Normalized outbound<br/>AudioChunk]
+    IQ[(Bounded input queue)]
+    RT[Realtime turn runtime<br/>normalized events · VAD · semantic turns<br/>cancellation · generation IDs]
+    OQ[(Bounded output queue)]
 
-    B -->|session/auth request| SIG
-    SIG -->|short-lived provider token| B
-    B -->|WebRTC media tracks| GW
+    B --> G
+    G -->|auth/session request| ID
+    ID -->|short-lived provider token| B
+    G -->|SDP/ICE signaling| AD
+    B -->|WebRTC media tracks| AD
     B -.->|ICE candidates| ICE
-    GW -.->|connectivity checks / relay| ICE
-
-    GW -->|decode, jitter, normalize| IN
-    IN --> RT
-    RT --> OUT
-    OUT -->|pace, encode, publish track| GW
-    GW -->|outbound WebRTC audio| B
-
-    TEL -->|provider media| IN
-    OUT -->|provider media| TEL
-```
-
-Key invariant:
-
-```text
-WebRTC packets are decoded and normalized at the media boundary.
-The runtime never needs to know RTP, DTLS-SRTP, ICE, or Opus packet details.
+    AD -.->|STUN/TURN| ICE
+    ID -->|server-side session binding| AD
+    PH --> TEL
+    ID -->|tenant binding| TEL
+    AD --> IQ
+    TEL --> IQ
+    IQ --> RT
+    RT --> OQ
+    OQ --> AD
+    AD -->|outbound WebRTC track| B
+    OQ --> TEL
+    TEL -->|telephony media| PH
 ```
 
 ## 2. Session runtime, voice engine, and external providers
 
-This diagram shows the per-session processing path after the media gateway has
-produced normalized audio frames. The adapter boxes are application-owned;
-provider boxes perform external inference.
-
 ```mermaid
 flowchart TB
     IQ[(Bounded input queue)]
-    RT[Realtime turn runtime<br/>VAD · endpointing · semantic turns<br/>barge-in · cancellation]
-    STTA[STT adapter]
-    STTP[External STT provider]
-    CTX[Context builder / policy<br/>tenant scope · redaction · token budget]
-    AG[Agent orchestrator<br/>workflow · streaming · tool proposals]
-    LLMP[External LLM / reasoning provider]
-    TTSA[TTS adapter]
-    TTSP[External TTS provider]
+    RT[Realtime turn runtime<br/>normalized events · VAD · semantic turns<br/>cancellation · generation IDs]
+    STT[Streaming STT adapter]
+    STTP[STT inference provider]
+    AG[Agent orchestrator<br/>prompt · workflow · streaming]
+    LLMP[LLM / reasoning provider]
+    TTS[Streaming TTS adapter]
+    TTSP[TTS inference provider]
     OQ[(Bounded output queue)]
     S2S[Optional realtime S2S adapter]
-    S2SP[External realtime S2S provider]
+    S2SP[Realtime S2S provider]
 
     IQ --> RT
-    RT -->|audio frames| STTA
-    STTA -->|audio stream| STTP
-    STTP -->|partial/final transcript events| STTA
-    STTA -->|normalized transcript events| RT
-    RT -->|confirmed UserTurn| CTX
-    CTX -->|bounded authorized context| AG
-    AG -->|prompt + context| LLMP
-    LLMP -->|tokens + structured tool proposals| AG
-    AG -->|speakable text chunks| TTSA
-    TTSA -->|text stream| TTSP
-    TTSP -->|audio chunks| TTSA
-    TTSA -->|normalized audio| OQ
-
+    RT -->|audio frames| STT
+    STT -->|audio stream| STTP
+    STTP -->|partial/final events| STT
+    STT -->|partial/final events| RT
+    RT -->|confirmed turn| AG
+    AG -->|prompt + scoped context| LLMP
+    LLMP -->|tokens + structured proposals| AG
+    AG -->|streamed text| TTS
+    TTS -->|speakable text| TTSP
+    TTSP -->|audio chunks| TTS
+    TTS -->|audio chunks| OQ
     RT -.->|alternative media engine| S2S
     S2S <--> S2SP
     S2SP -.->|normalized audio/events| RT
 ```
 
-The runtime is the session-scoped owner of mutable realtime state. The context
-builder decides what the model is allowed to see; the agent orchestrator
-coordinates model calls and tool proposals; the TTS adapter converts approved
-speakable text into outbound audio.
-
 ## 3. Control plane
-
-This diagram shows identity, tenant policy, tools, durable workflow state,
-memory, asynchronous work, and observability. These components are authoritative
-or durable; they should not be placed on the raw audio hot path unnecessarily.
 
 ```mermaid
 flowchart TB
-    USER[Authenticated user / provider callback]
-    ID[Identity + session issuance<br/>tenant binding · roles<br/>short-lived credentials]
-    POLICY[Tenant policy snapshot<br/>tools · model · voice · region<br/>retention · quotas]
-    RUNTIME[SessionRuntime<br/>session_id · tenant_id · subject_id]
-    CTX[Context builder / policy filter<br/>scope · redact · compact · budget]
-    MEM[(Short-term checkpoints<br/>long-term memory)]
-    WF[(Durable workflow state<br/>intent · slots · confirmations<br/>tool status · idempotency)]
-    TB[Tool broker<br/>schema · authorization<br/>confirmation · reconciliation]
-    APP[(Authoritative business systems<br/>orders · bookings · payments<br/>identity · CRM)]
-    JOBS[Async workers / job queue<br/>long-running and CPU-heavy work]
-    OBS[(Event journal / observability<br/>traces · metrics · redacted audit)]
-    BILL[Usage / billing / quotas]
+    ID[Identity + session issuance<br/>tenant binding · short-lived credentials]
+    RT[Realtime turn runtime<br/>normalized events · VAD · semantic turns<br/>cancellation · generation IDs]
+    AG[Agent orchestrator<br/>prompt · workflow · streaming]
+    TB[Tool broker<br/>schema · auth · confirmation · idempotency]
+    WS[Durable workflow state]
+    MEM[Short-term checkpoint<br/>long-term memory]
+    EJ[(Event journal<br/>traces · metrics · redacted audit)]
+    APP[(Authoritative business systems<br/>orders · bookings · identity · payments)]
+    JOBS[Async workers<br/>long-running tasks · CPU-heavy work]
 
-    USER --> ID
-    ID -->|authenticated tenant/session context| RUNTIME
-    ID -->|versioned configuration| POLICY
-    POLICY --> RUNTIME
-    RUNTIME --> CTX
-    MEM <--> CTX
-    WF <--> CTX
-    CTX -->|bounded model context| RUNTIME
-    RUNTIME -->|typed tool request| TB
-    TB -->|authorized operation| APP
-    APP -->|authoritative result| TB
-    TB -->|tool result / status| RUNTIME
-    TB -->|long-running work| JOBS
-    JOBS -->|checkpoint / result| WF
-    RUNTIME <--> WF
-    RUNTIME -.-> OBS
-    TB -.-> OBS
-    ID -.-> OBS
-    RUNTIME --> BILL
-    TB --> BILL
-    BILL --> POLICY
+    ID -->|tenant policy snapshot| RT
+    RT -->|confirmed turn| AG
+    AG -->|typed tool request| TB
+    TB --> APP
+    APP --> TB
+    TB -->|verified result| AG
+    AG --> WS
+    RT --> WS
+    AG <--> MEM
+    TB -->|long-running / CPU work| JOBS
+    JOBS -->|checkpoint / result| WS
+    TB -->|idempotency + outcome| WS
+    RT -.-> EJ
+    AG -.-> EJ
+    TB -.-> EJ
+    ID -.-> EJ
 ```
 
-The control-plane rules are:
-
-- tenant context comes from validated identity, not arbitrary client fields;
-- model output is a proposal, not authorization;
-- workflow/tool outcomes are persisted with idempotency and uncertainty;
-- long-term memory is promoted and retrieved under tenant/subject policy;
-- raw audio and sensitive transcripts are redacted and retained deliberately;
-- the event journal supports tracing and audit without becoming the business
-  source of truth.
-
-## How the three diagrams compose
-
-```text
-Media plane
-  -> normalized audio/events
-  -> SessionRuntime and voice engine
-  -> control-plane policy/tools/state
-  -> normalized output audio/events
-  -> media plane
-```
-
-The diagrams are logical boundaries. Depending on scale and provider choice,
-the media gateway, session runtime, and adapters may be colocated in one worker,
-split into services, or supplied by a managed platform.
+These are logical extracts. Depending on deployment, the canonical components
+may be colocated in one worker, split into services, or supplied by a managed
+platform; the component contracts and arrows remain the same.
